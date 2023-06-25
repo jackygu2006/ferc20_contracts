@@ -3,52 +3,62 @@ pragma solidity ^0.8.18;
 
 import "./interfaces/IInscription.sol";
 import "./interfaces/IInscriptionFactory.sol";
+import "./interfaces/INonfungiblePositionManager.sol";
+import "./interfaces/IERC721Receiver.sol";
+import "./interfaces/IWETH.sol";
 import "./libs/TransferHelper.sol";
 import "./libs/BytesLib.sol";
 
 // This contract will be created while deploying
 // The liquidity can not be removed
 contract InitialFairOffering {
-    IInscriptionFactory public inscriptionFactory = IInscriptionFactory(0xc4fFFfe58B4557374c34BA7e5CF836463B509995); // test on mumbai, ajust while deploying
+    int24 private constant MIN_TICK = -887272;      // add liquidity with full range 
+    int24 private constant MAX_TICK = -MIN_TICK;    // add liquidity with full range
+    int24 private constant TICK_SPACING = 60;       // Tick space is 60
 
-    // uint256 public initialErc20Liquidity;
-    // uint256 public ethRatioToLiquidity = 5000; // How much ETH for adding liquidity, 1000 means 10%
-    uint256 public mintCount;
-    uint256 public totalVoteForRefund;
-    uint256 public voteLine = 6666; // 6666 means 66.66%
-    bool    public refundable = false;
+    INonfungiblePositionManager public constant nonfungiblePositionManager 
+        = INonfungiblePositionManager(0xC36442b4a4522E871399CD717aBDD847Ab11FE88);
 
-    mapping(address => uint256) public etherLiquidity;
-    mapping(address => bool) public votedForRefund;
+    IWETH weth;
+
+    IInscriptionFactory public inscriptionFactory;
+    address public constant BURN_ADDRESS = address(0x01);
+
+    struct MintData {
+        uint256 ethAmount;          // eth payed by user(deduce commission)
+        uint256 tokenAmount;        // token minted by user
+        uint256 tokenLiquidity;     // token liquidity saved in this contract
+    }
+    mapping(address => MintData) mintData;
+
+    struct Deposit {
+        address owner;
+        uint128 liquidity;
+        address token0;
+        address token1;
+    }
+    mapping(uint => Deposit) public deposits;
+    mapping(uint => uint) public tokenIds;
+    uint tokenIdCount;
 
     IInscriptionFactory.Token public token;
 
-    constructor(IInscriptionFactory _inscriptionFactory) {
-        inscriptionFactory = _inscriptionFactory;
+    // This contract can be only created by InscriptionFactory contract
+    constructor(
+        address _inscriptionFactory,
+        address _weth
+    ) {
+        inscriptionFactory = IInscriptionFactory(_inscriptionFactory);
+        weth = IWETH(_weth);
     }
 
-    receive() external payable {}
+    receive() external payable {
+        // Change all received ETH to WETH
+        TransferHelper.safeTransferETH(address(weth), msg.value);
+    }
 
-    // Initialize the erc20 quantity, and the same amount must be sent to here while deploying the contract
-    // the input is a bytes data, formated by JSON from front-end. 
-    // Json: 
-    // {
-    //     "dataType":[
-    //         {
-    //             "name":"amount",
-    //             "type":"uint256",
-    //             "pos":0
-    //         },
-    //         {
-    //             "name":"ratio",
-    //             "type":"uint16",
-    //             "pos":32
-    //         }
-    //     ]
-    // }
     function initialize(
-        IInscriptionFactory.Token memory _token,
-        bytes memory _data      // tick: test01, initialErc20Liquidity: 50000000000000000000000, ethRatioToLiquidity: 5000(50%), data: 0x000000000000000000000000000000000000000000000a968163f0a57b4000001388
+        IInscriptionFactory.Token memory _token
     ) public {
         // Check if the deployer has sent the liquidity ferc20 tokens
         require(address(inscriptionFactory)== msg.sender, "Only inscription factory allowed");
@@ -57,73 +67,111 @@ contract InitialFairOffering {
     }
 
     // Add liquidity
-    // the input is a bytes data, formated by JSON from front-end. 
-    // Json: 
-    // {
-    //     "dataType":[
-    //         {
-    //             "name":"deployer",
-    //             "type":"address",
-    //             "pos":0
-    //         }
-    //     ]
-    // }
-    function execute(
-        bytes memory _data       // test 0x615b80388e3d3cac6aa3a904803acfe7939f0399
+    function addLiquidity(
+        uint16 ratio            // The ratio of balance of eths and tokens will be added to liquidity pool
     ) public {
-        require(!refundable, "under refunding");
-        // address deployer = BytesLib.toAddress(_data, 0);
+        require(ratio > 0 && ratio <=10000, "ratio error");
         require(token.deployer == msg.sender, "Only deployer");
         require(IInscription(token.addr).totalRollups() >= maxRollups(), "mint not finished");
 
-        // Send ether back to deployer of ether as promise
-        uint256 ethToLiquidity = address(this).balance * token.liquidityEtherPercent / 10000;
-        uint256 backAmount = address(this).balance - ethToLiquidity;
-        if(backAmount > 0) TransferHelper.safeTransferETH(token.deployer, backAmount);
+        // Send ether back to deployer, the eth liquidity is based on the balance of this contract. So, anyone can send eth to this contract
+        uint256 balanceOfWeth = IWETH(weth).balanceOf(address(this));
+        uint256 totalEthLiquidity = balanceOfWeth * token.liquidityEtherPercent / 10000;
 
-        // Add liquidity, LP token keep in this contract, using address(this).balance and "token.cap * _token.liquidityTokenPercent / 10000"
-        // TO DO
-        TransferHelper.safeTransferETH(address(0x0), ethToLiquidity);
-
-        // After mint finished, the amount of tokens in this contract is: 
-        uint256 _balanceOfToken = IInscription(token.addr).balanceOf(address(this));
-        uint256 _totalTokensForLiquidity = totalTokensForLiquidity() * 99999 / 100000;
-        require(_balanceOfToken >= _totalTokensForLiquidity, "token not enough for liquidity");
-        TransferHelper.safeTransfer(token.addr, address(0x0), _totalTokensForLiquidity); // ??
-    }
-
-    // If the mint have not finished, can vote for refunding
-    // When the refund start, the minted tokens of users will not be burned. But all the tokens in this contract will be burned.
-    function voteForRefund() public {
-        require(etherLiquidity[msg.sender] > 0, "you have not mint");
-        require(IInscription(token.addr).totalRollups() < maxRollups(), "mint has finished");
-        require(!votedForRefund[msg.sender], "Voted");
-
-        votedForRefund[msg.sender] = true;
-        totalVoteForRefund++;
-        if(totalVoteForRefund > mintCount * voteLine / 10000) {
-            refundable = true;
-            // Burn all tokens in ifo contract
-            uint256 _balance = IInscription(token.addr).balanceOf(address(this));
-            if(_balance > 0) TransferHelper.safeTransfer(token.addr, address(0x0), _balance);
+        uint256 backToDeployAmount = balanceOfWeth * (10000 - token.liquidityEtherPercent) / 10000;
+        if(backToDeployAmount > 0) {
+            weth.withdraw(backToDeployAmount * ratio / 10000);  // Change WETH to ETH
+            TransferHelper.safeTransferETH(token.deployer, backToDeployAmount * ratio / 10000);
         }
+        // Add liquidity, LP token keep in this contract, using address(this).balance and "token.cap * _token.liquidityTokenPercent / 10000"
+        uint256 totalTokenLiquidity = IInscription(token.addr).balanceOf(address(this));
+
+        // TransferHelper.safeTransfer(address(weth), BURN_ADDRESS, totalEthLiquidity * ratio / 10000);
+        // TransferHelper.safeTransfer(token.addr, BURN_ADDRESS, totalTokenLiquidity * ratio / 10000); // ??
+
+        _mintNewPosition(
+            totalEthLiquidity * ratio / 10000,
+            totalTokenLiquidity * ratio / 10000
+        );
     }
 
-    // If refunding start, user can refund the Ether by themselves.
+    function collectFee(
+        uint tokenId
+    ) public returns (uint amount0, uint amount1) {
+        // Anyone can call this function, and fee will be sent to deployer
+        require(IInscription(token.addr).totalRollups() >= maxRollups(), "mint not finished");
+
+        INonfungiblePositionManager.CollectParams
+            memory params = INonfungiblePositionManager.CollectParams({
+                tokenId: tokenId,
+                recipient: address(this),
+                amount0Max: type(uint128).max,
+                amount1Max: type(uint128).max
+            });
+
+        (amount0, amount1) = nonfungiblePositionManager.collect(params);
+
+        // send collected feed back to owner
+        _sendToOwner(tokenId, amount0, amount1);
+    }
+
     function refund() public {
-        require(refundable, "can not refund");
-        require(etherLiquidity[msg.sender] > 0, "you balance is zero");
+        require(mintData[msg.sender].ethAmount > 0, "you have not mint");
+        require(IInscription(token.addr).totalRollups() < maxRollups(), "mint has finished");
+
+        // check balance and allowance of tokens, if the balance or allowance is smaller than the what he/she get while do mint, the refund fail
+        require(IInscription(token.addr).balanceOf(msg.sender) >= mintData[msg.sender].tokenAmount, "Your balance token not enough");
+        require(IInscription(token.addr).allowance(msg.sender, address(this)) >= mintData[msg.sender].tokenAmount, "Your allowance not enough");
+
+        // Burn the tokens from msg.sender
+        TransferHelper.safeTransferFrom(token.addr, msg.sender, BURN_ADDRESS, mintData[msg.sender].tokenAmount);
+        mintData[msg.sender].tokenAmount = 0;
+
+        // Burn the token liquidity in this contract
+        TransferHelper.safeTransfer(token.addr, BURN_ADDRESS, mintData[msg.sender].tokenLiquidity);
+        mintData[msg.sender].tokenLiquidity = 0;
+
         // Refund Ether
-        TransferHelper.safeTransferETH(msg.sender, etherLiquidity[msg.sender]);
-        etherLiquidity[msg.sender] = 0;
+        weth.withdraw(mintData[msg.sender].ethAmount);  // Change WETH to ETH
+        TransferHelper.safeTransferETH(msg.sender, mintData[msg.sender].ethAmount);
+        mintData[msg.sender].ethAmount = 0;
+    }
+
+    function onERC721Received(
+        address operator,
+        address from,
+        uint tokenId,
+        bytes calldata
+    ) public returns (bytes4) {
+        _createDeposit(operator, tokenId);
+        return IERC721Receiver.onERC721Received.selector;
+    }
+
+    function getLiquidity(uint _tokenId) public view returns(
+        uint96 nonce, 
+        address operator, 
+        address token0, 
+        address token1, 
+        uint24 fee, 
+        int24 tickLower, 
+        int24 tickUpper, 
+        uint128 liquidity, 
+        uint256 feeGrowthInside0LastX128, 
+        uint256 feeGrowthInside1LastX128, 
+        uint128 tokensOwed0, 
+        uint128 tokensOwed1        
+    ) {
+        return nonfungiblePositionManager.positions(_tokenId);
     }
 
     // Call from Inscription::mint only
-    function setEtherLiquidity(address _addr, uint256 _amount) public {
-        require(_amount > 0 && _addr != address(0x0), "setEtherLiquidity wrong params");
+    function setMintData(address _addr, uint256 _ethAmount, uint256 _tokenAmount, uint256 _tokenLiquidity) public {
+        require(_ethAmount > 0 && _tokenAmount > 0 && _tokenLiquidity > 0 && _addr != address(0x0), "setEtherLiquidity wrong params");
         require(msg.sender == token.addr, "Only call from inscription allowed");
-        if(etherLiquidity[_addr] == 0) mintCount++;
-        etherLiquidity[_addr] = etherLiquidity[_addr] + _amount;
+
+        mintData[_addr].ethAmount = mintData[_addr].ethAmount + _ethAmount;
+        mintData[_addr].tokenAmount = mintData[_addr].tokenAmount + _tokenAmount;
+        mintData[_addr].tokenLiquidity = mintData[_addr].tokenLiquidity + _tokenLiquidity;
     }
 
     function maxRollups() public view returns(uint256) {
@@ -134,7 +182,82 @@ contract InitialFairOffering {
         return token.cap * (10000 - token.liquidityTokenPercent) / token.limitPerMint / 10000;
     }
 
-    function totalTokensForLiquidity() public view returns(uint256) {
-        return maxRollups() * token.limitPerMint * token.liquidityTokenPercent / (10000 - token.liquidityTokenPercent);
+    function _mintNewPosition(
+        uint amount0ToAdd,
+        uint amount1ToAdd
+    ) private returns (uint tokenId, uint128 liquidity, uint amount0, uint amount1) {
+        TransferHelper.safeTransferFrom(address(weth), msg.sender, address(this), amount0ToAdd);
+        TransferHelper.safeTransferFrom(token.addr, msg.sender, address(this), amount1ToAdd);
+
+        // Approve the position manager
+        TransferHelper.safeApprove(address(weth), address(nonfungiblePositionManager), amount0ToAdd);
+        TransferHelper.safeApprove(token.addr, address(nonfungiblePositionManager), amount1ToAdd);
+
+        INonfungiblePositionManager.MintParams
+            memory params = INonfungiblePositionManager.MintParams({
+                token0: address(weth),
+                token1: token.addr,
+                fee: 3000,
+                tickLower: (MIN_TICK / TICK_SPACING) * TICK_SPACING, // full range
+                tickUpper: (MAX_TICK / TICK_SPACING) * TICK_SPACING,
+                amount0Desired: amount0ToAdd,
+                amount1Desired: amount1ToAdd,
+                amount0Min: 0,
+                amount1Min: 0,
+                recipient: address(this),
+                deadline: block.timestamp
+            });
+
+        (tokenId, liquidity, amount0, amount1) = nonfungiblePositionManager.mint(params);
+
+        _createDeposit(msg.sender, tokenId);
+
+        if (amount0 < amount0ToAdd) {
+            TransferHelper.safeApprove(address(weth), address(nonfungiblePositionManager), 0);
+            uint256 refund0 = amount0ToAdd - amount0;
+            TransferHelper.safeTransfer(address(weth), msg.sender, refund0);
+        }
+
+        if (amount1 < amount1ToAdd) {
+            TransferHelper.safeApprove(token.addr, address(nonfungiblePositionManager), 0);
+            uint256 refund1 = amount1ToAdd - amount1;
+            TransferHelper.safeTransfer(token.addr, msg.sender, refund1);
+        }
+    }
+    
+    function _createDeposit(
+        address _operator, 
+        uint _tokenId
+    ) private {
+        (, , address token0, address token1, , , , uint128 liquidity, , , ,) = nonfungiblePositionManager.positions(_tokenId);
+
+        if(deposits[_tokenId].owner == address(0x0)) {
+            tokenIds[tokenIdCount] = _tokenId;
+            tokenIdCount++;
+        }
+
+        deposits[_tokenId] = Deposit({
+            owner: _operator,
+            liquidity: liquidity,
+            token0: token0,
+            token1: token1
+        });
+    }
+
+    /// @notice Transfers funds to owner of NFT
+    /// @param tokenId The id of the erc721
+    /// @param amount0 The amount of token0
+    /// @param amount1 The amount of token1
+    function _sendToOwner(
+        uint256 tokenId,
+        uint256 amount0,
+        uint256 amount1
+    ) internal {
+        // get owner of contract
+        address owner = deposits[tokenId].owner;
+
+        // send to owner
+        TransferHelper.safeTransfer(deposits[tokenId].token0, owner, amount0);
+        TransferHelper.safeTransfer(deposits[tokenId].token1, owner, amount1);
     }
 }

@@ -56,9 +56,15 @@ library DeployInscriptionContract {
 }
 
 library DeployIFOContract {
-    function deploy(address _factoryContractAddress) public returns(address ifoAddress) {
+    function deploy(
+        address _factoryContractAddress,
+        address _weth
+    ) public returns(address ifoAddress) {
         bytes memory bytecode = type(InitialFairOffering).creationCode;
-		bytecode = abi.encodePacked(bytecode, abi.encode(_factoryContractAddress));
+		bytecode = abi.encodePacked(bytecode, abi.encode(
+            _factoryContractAddress,
+            _weth
+        ));
         bytes32 salt = keccak256(abi.encodePacked(block.timestamp));
 
 		assembly ("memory-safe") {

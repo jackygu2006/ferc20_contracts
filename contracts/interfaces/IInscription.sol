@@ -28,5 +28,6 @@ interface IInscription {
     function getFerc20Data() external view returns(FERC20 memory);
     function balanceOf(address owner) external returns(uint256);
     function totalSupply() external returns(uint256);
+    function allowance(address owner, address spender) external returns(uint256);
     function totalRollups() external returns(uint256);
 }

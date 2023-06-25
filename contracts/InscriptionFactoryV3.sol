@@ -7,7 +7,6 @@ import "./InscriptionV3.sol";
 import "./libs/String.sol";
 import "./libs/TransferHelper.sol";
 import "./DeployContracts.sol";
-import "./InitialFairOffering.sol";
 import "./interfaces/IInitialFairOffering.sol";
 import "./interfaces/IInscriptionFactory.sol";
 
@@ -35,9 +34,14 @@ contract InscriptionFactory is Ownable{
         uint256 timestamp
     );
 
-    constructor() {
+    address public weth;
+
+    constructor(
+        address _weth
+    ) {
         // The inscription id will be from 1, not zero.
         _inscriptionNumbers.increment();
+        weth = _weth;
     }
 
     // Let this contract accept ETH as tip
@@ -74,7 +78,10 @@ contract InscriptionFactory is Ownable{
         address _ifoContractAddress = address(0x0);
         if(_isIFOMode) {
             // Create IFO contract
-            _ifoContractAddress = DeployIFOContract.deploy(address(this));
+            _ifoContractAddress = DeployIFOContract.deploy(
+                address(this),
+                weth
+            );
         }
 
         // Create inscription contract
@@ -126,8 +133,7 @@ contract InscriptionFactory is Ownable{
         // Run initialize function of IFO contract, must after inscriptions data is set.
         if(_isIFOMode) {
             IInitialFairOffering(_ifoContractAddress).initialize(
-                inscriptions[_inscriptionId], 
-                BytesLib.concat(abi.encodePacked(_cap * _liquidityTokenPercent / 10000), abi.encodePacked(_liquidityEtherPercent)) // for testing
+                inscriptions[_inscriptionId]
             );
         }
 
