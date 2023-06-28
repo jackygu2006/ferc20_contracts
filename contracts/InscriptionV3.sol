@@ -88,7 +88,7 @@ contract Inscription is ERC20 {
         // Check if the assets in the msg.sender is satisfied
         require(ferc20.onlyContractAddress == address(0x0) || ICommonToken(ferc20.onlyContractAddress).balanceOf(msg.sender) >= ferc20.onlyMinQuantity, "You don't have required assets");
         require(ferc20.whitelist == address(0x0) || IWhitelist(ferc20.whitelist).getStatus(symbol(), msg.sender), "You are not in whitelist");
-        require(lastMintTimestamp[msg.sender] < block.timestamp, "Timestamp fail");
+        require(lastMintTimestamp[msg.sender] < block.timestamp, "Timestamp fail"); // The only line added on V2
         
         if(lastMintTimestamp[msg.sender] + ferc20.freezeTime > block.timestamp) {
             // The min extra tip is double of last mint fee
@@ -96,38 +96,38 @@ contract Inscription is ERC20 {
             // Check if the tip is high than the min extra fee
             require(msg.value >= ferc20.crowdFundingRate + lastMintFee[msg.sender], "Send some ETH as fee and crowdfunding");
             // Transfer the fee to the crowdfunding address
-            if(ferc20.crowdFundingRate > 0) _dispatchFunding(ferc20.crowdFundingRate, ferc20.limitPerMint, tokenForInitialLiquidity);
+            if(ferc20.crowdFundingRate > 0) _dispatchFunding(_to, ferc20.crowdFundingRate, ferc20.limitPerMint, tokenForInitialLiquidity);
             // Transfer the tip to InscriptionFactory smart contract
-            if(msg.value - ferc20.crowdFundingRate > 0) TransferHelper.safeTransferETH(ferc20.inscriptionFactory, msg.value -ferc20. crowdFundingRate);
-            // Do mint
+            if(msg.value - ferc20.crowdFundingRate > 0) TransferHelper.safeTransferETH(ferc20.inscriptionFactory, msg.value - ferc20.crowdFundingRate);
+            // Do mint for the participant
             _mint(_to, ferc20.limitPerMint);
-            totalRollups++;
             // Mint for initial liquidity
             if(tokenForInitialLiquidity > 0) {
                 _mint(ferc20.ifoContractAddress, tokenForInitialLiquidity);
-             }
+            }
+            totalRollups++;
         } else {
             // Transfer the fee to the crowdfunding address
             if(ferc20.crowdFundingRate > 0) {
                 require(msg.value >= ferc20.crowdFundingRate, "Send some ETH as crowdfunding");
-                _dispatchFunding(msg.value, ferc20.limitPerMint, tokenForInitialLiquidity);
+                _dispatchFunding(_to, msg.value, ferc20.limitPerMint, tokenForInitialLiquidity);
             }
             // Out of frozen time, free mint. Reset the timestamp and mint times.
             lastMintFee[msg.sender] = 0;
             lastMintTimestamp[msg.sender] = block.timestamp;
             // Do mint
             _mint(_to, ferc20.limitPerMint);
-            totalRollups++;
             // Mint for initial liquidity
             if(tokenForInitialLiquidity > 0) {
                 _mint(ferc20.ifoContractAddress, tokenForInitialLiquidity);
             }
+            totalRollups++;
         }
     }
 
     // batch mint is only available for non-frozen-time tokens
     function batchMint(address _to, uint256 _num) payable public {
-        uint256 tokenForInitialLiquidity = ferc20.isIFOMode ? ferc20.limitPerMint * ferc20.liquidityTokenPercent * _num / (10000 - ferc20.liquidityTokenPercent) : 0;
+        uint256 tokenForInitialLiquidity = ferc20.isIFOMode ? ferc20.limitPerMint * ferc20.liquidityTokenPercent / (10000 - ferc20.liquidityTokenPercent) : 0;
         require(_num <= ferc20.maxMintSize, "exceed max mint size");
         require(totalRollups + _num <= maxRollups(), "Touch cap");
         require(ferc20.freezeTime == 0, "Batch mint only for non-frozen token");
@@ -136,7 +136,7 @@ contract Inscription is ERC20 {
 
         if(ferc20.crowdFundingRate > 0) {
             require(msg.value >= ferc20.crowdFundingRate * _num, "Crowdfunding ETH not enough");
-            _dispatchFunding(msg.value, ferc20.limitPerMint * _num, tokenForInitialLiquidity);
+            _dispatchFunding(_to, msg.value, ferc20.limitPerMint * _num, tokenForInitialLiquidity * _num);
         }
         for(uint256 i = 0; i < _num; i++) {
             _mint(_to, ferc20.limitPerMint);
@@ -170,13 +170,18 @@ contract Inscription is ERC20 {
         return lastMintFee[_addr];
     }
 
-    function _dispatchFunding(uint256 _ethAmount, uint256 _tokenAmount, uint256 _tokenForLiquidity) private {
+    function _dispatchFunding(address _to, uint256 _ethAmount, uint256 _tokenAmount, uint256 _tokenForLiquidity) private {
         require(ferc20.ifoContractAddress != address(0x0), "ifo address zero");
 
         uint256 commission = _ethAmount * ferc20.fundingCommission / 10000;
-        TransferHelper.safeTransferETH(ferc20.ifoContractAddress, _ethAmount - commission);
-        if(commission > 0) TransferHelper.safeTransferETH(ferc20.inscriptionFactory, commission);
-        IInitialFairOffering(ferc20.ifoContractAddress).setMintData(msg.sender, _ethAmount - commission, _tokenAmount, _tokenForLiquidity);
+        TransferHelper.safeTransferETH(ferc20.ifoContractAddress, _ethAmount - commission); // line 1
+        if(commission > 0) TransferHelper.safeTransferETH(ferc20.inscriptionFactory, commission); // line 2
+        IInitialFairOffering(ferc20.ifoContractAddress).setMintData(                         // line 3, 1-3全部屏蔽ok，1-2屏蔽，ko(问题出在Line3)，3屏蔽: TransferHelper::safeTransferETH: ETH transfer failed
+            _to,                                                                      // 1/3屏蔽: ok, 3屏蔽,ifoContractAddress修改receive, ok通过,原因本地没有weth
+            uint128(_ethAmount - commission),                                                // 全部不屏蔽，ifo合约去掉receive内容 ko
+            uint128(_tokenAmount), 
+            uint128(_tokenForLiquidity)
+        );
     }
 
     function maxRollups() public view returns(uint256) {

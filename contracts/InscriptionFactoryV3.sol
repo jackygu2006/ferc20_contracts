@@ -15,8 +15,8 @@ contract InscriptionFactory is Ownable{
     Counters.Counter private _inscriptionNumbers;
 
     uint8 public minTickSize = 4;                   // tick(symbol) min length
-    uint8 public maxTickSize = 6;                   // tick(symbol) max length
-    uint128 public baseFee = 500000000000000;       // Will charge 0.00025 ETH as extra min tip from the second time of mint in the frozen period. And this tip will be double for each mint.
+    uint8 public maxTickSize = 5;                   // tick(symbol) max length
+    uint128 public baseFee = 500000000000000;       // Will charge 0.0005 ETH as extra min tip from the second time of mint in the frozen period. And this tip will be double for each mint.
     uint16 public fundingCommission = 100;       // commission rate of fund raising, 100 means 1%
     address public whitelistContract;
 
@@ -57,12 +57,14 @@ contract InscriptionFactory is Ownable{
         uint40          _freezeTime,                // Freeze seconds between two mint, during this freezing period, the mint fee will be increased 
         address         _onlyContractAddress,       // Only the holder of this asset can mint, optional
         uint128         _onlyMinQuantity,           // The min quantity of asset for mint, optional
-        uint128         _crowdFundingRate,
+        uint128         _crowdFundingRate,          // Eth cost for one rollup
         bool            _isWhitelist,
         bool            _isIFOMode,
-        uint16          _liquidityTokenPercent,     // 5000 means 50%
-        uint16          _liquidityEtherPercent
+        uint16          _liquidityTokenPercent,     // TLR(token liquidity ratio) 5000 means 50%
+        uint16          _liquidityEtherPercent      // ELR(Ethereum liquidity ratio) 
     ) public returns (address _inscriptionAddress) {
+        require(_liquidityTokenPercent >= 0 && _liquidityTokenPercent <= 10000, "token percent 0-10000");
+        require(_liquidityEtherPercent >= 0 && _liquidityEtherPercent <= 10000, "ether percent 0-10000");
         uint256 _len = String.strlen(_tick);
         require(_len <= maxTickSize && _len >= minTickSize, "Tick lenght not right");
         require(_cap >= _limitPerMint, "Limit per mint exceed cap");
@@ -73,7 +75,7 @@ contract InscriptionFactory is Ownable{
         require(!stockTicks[token.addr], "tick is in stock");
         require(token.addr == address(0x0), "tick is existed");
 
-        // ###### TO DO: call it through Dock contract 
+        // TO DO: call it through Dock contract 
         // If IFO mode
         address _ifoContractAddress = address(0x0);
         if(_isIFOMode) {
@@ -238,6 +240,7 @@ contract InscriptionFactory is Ownable{
 
     // Update funding commission
     function updateFundingCommission(uint16 _rate) public onlyOwner {
+        require(_rate >= 0 && _rate <= 10000, "shoule be 0-10000");
         fundingCommission = _rate;
     }
 
@@ -265,7 +268,7 @@ contract InscriptionFactory is Ownable{
     }
 
     // ######
-    function deployTest(string memory _tick, bool _isIFOMode, uint128 _limitPerMint, uint16 _liquidityTokenPercent) public {
+    function deployTest(string memory _tick, bool _isIFOMode, uint40 _freezeTime, uint128 _limitPerMint, uint16 _liquidityTokenPercent) public {
         deploy(
             "Test#01",
             _tick,
@@ -273,15 +276,21 @@ contract InscriptionFactory is Ownable{
             100000 ether,   // 100,000
             _limitPerMint,     // 1000 * 10^18
             10,      // Mint size
-            0,    // freezeTime
+            _freezeTime,    // freezeTime
             address(0x0),   // onlyContractAddress
             0,  // onlyMinQuantity
-            1 ether,  // crowdFundintRate
+            _isIFOMode ? 1 ether : 0,  // crowdFundintRate
             false, // isWhitelist
             _isIFOMode, // isIFOMode
-            _liquidityTokenPercent, // liquidityTokenPercent
-            8000 // liquidityEtherPercent
+            _isIFOMode ? _liquidityTokenPercent : 0, // liquidityTokenPercent
+            _isIFOMode ? 8000 : 0 // liquidityEtherPercent
         );
     }
 }
-// 10000000000000000000
+// 10000000000000000000  ifo费用
+// 100000000000000000 ETH,打到factory的佣金
+//  9900000000000000000  打到ifo合约的weth，数据正确，扣除了1%手续费
+// 5539_565217391304347820 打到ifo合约的test2
+// 12330_000000000000000000 打给用户
+
+// 8258_372093023255813950

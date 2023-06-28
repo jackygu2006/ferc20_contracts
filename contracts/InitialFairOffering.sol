@@ -19,17 +19,18 @@ contract InitialFairOffering {
     INonfungiblePositionManager public constant nonfungiblePositionManager 
         = INonfungiblePositionManager(0xC36442b4a4522E871399CD717aBDD847Ab11FE88);
 
-    IWETH weth;
+    IWETH public weth;
 
     IInscriptionFactory public inscriptionFactory;
     address public constant BURN_ADDRESS = address(0x01);
 
     struct MintData {
-        uint256 ethAmount;          // eth payed by user(deduce commission)
-        uint256 tokenAmount;        // token minted by user
-        uint256 tokenLiquidity;     // token liquidity saved in this contract
+        uint128 ethAmount;          // eth payed by user(deduce commission)
+        uint128 tokenAmount;        // token minted by user
+        uint128 tokenLiquidity;     // token liquidity saved in this contract
     }
-    mapping(address => MintData) mintData;
+
+    mapping(address => MintData) public mintData;
 
     struct Deposit {
         address owner;
@@ -37,9 +38,9 @@ contract InitialFairOffering {
         address token0;
         address token1;
     }
-    mapping(uint => Deposit) public deposits;
+    mapping(uint => Deposit) public deposits; // uint - tokenId of liquidity NFT
     mapping(uint => uint) public tokenIds;
-    uint tokenIdCount;
+    uint public tokenIdCount;
 
     IInscriptionFactory.Token public token;
 
@@ -54,7 +55,7 @@ contract InitialFairOffering {
 
     receive() external payable {
         // Change all received ETH to WETH
-        TransferHelper.safeTransferETH(address(weth), msg.value);
+        if(msg.sender != address(weth)) TransferHelper.safeTransferETH(address(weth), msg.value);
     }
 
     function initialize(
@@ -76,9 +77,9 @@ contract InitialFairOffering {
 
         // Send ether back to deployer, the eth liquidity is based on the balance of this contract. So, anyone can send eth to this contract
         uint256 balanceOfWeth = IWETH(weth).balanceOf(address(this));
-        uint256 totalEthLiquidity = balanceOfWeth * token.liquidityEtherPercent / 10000;
+        uint256 totalEthLiquidity = balanceOfWeth * token.liquidityEtherPercent / 10000; // Ex. 50ETH in contract, 80% to the pool, totalEthLiquidity = 40;
 
-        uint256 backToDeployAmount = balanceOfWeth * (10000 - token.liquidityEtherPercent) / 10000;
+        uint256 backToDeployAmount = balanceOfWeth * (10000 - token.liquidityEtherPercent) / 10000; // Ex. 50ETH in contract, 20% to deployer
         if(backToDeployAmount > 0) {
             weth.withdraw(backToDeployAmount * ratio / 10000);  // Change WETH to ETH
             TransferHelper.safeTransferETH(token.deployer, backToDeployAmount * ratio / 10000);
@@ -87,11 +88,11 @@ contract InitialFairOffering {
         uint256 totalTokenLiquidity = IInscription(token.addr).balanceOf(address(this));
 
         // TransferHelper.safeTransfer(address(weth), BURN_ADDRESS, totalEthLiquidity * ratio / 10000);
-        // TransferHelper.safeTransfer(token.addr, BURN_ADDRESS, totalTokenLiquidity * ratio / 10000); // ??
+        // TransferHelper.safeTransfer(token.addr, BURN_ADDRESS, totalTokenLiquidity * ratio / 10000);
 
         _mintNewPosition(
-            totalEthLiquidity * ratio / 10000,
-            totalTokenLiquidity * ratio / 10000
+            totalEthLiquidity * ratio / 10000, // weth amount
+            totalTokenLiquidity * ratio / 10000 // ferc20 token amount
         );
     }
 
@@ -165,7 +166,7 @@ contract InitialFairOffering {
     }
 
     // Call from Inscription::mint only
-    function setMintData(address _addr, uint256 _ethAmount, uint256 _tokenAmount, uint256 _tokenLiquidity) public {
+    function setMintData(address _addr, uint128 _ethAmount, uint128 _tokenAmount, uint128 _tokenLiquidity) public {
         require(_ethAmount > 0 && _tokenAmount > 0 && _tokenLiquidity > 0 && _addr != address(0x0), "setEtherLiquidity wrong params");
         require(msg.sender == token.addr, "Only call from inscription allowed");
 
@@ -202,7 +203,7 @@ contract InitialFairOffering {
                 tickUpper: (MAX_TICK / TICK_SPACING) * TICK_SPACING,
                 amount0Desired: amount0ToAdd,
                 amount1Desired: amount1ToAdd,
-                amount0Min: 0,
+                amount0Min: 0, // ###### slipage处理
                 amount1Min: 0,
                 recipient: address(this),
                 deadline: block.timestamp
@@ -224,7 +225,7 @@ contract InitialFairOffering {
             TransferHelper.safeTransfer(token.addr, msg.sender, refund1);
         }
     }
-    
+
     function _createDeposit(
         address _operator, 
         uint _tokenId
