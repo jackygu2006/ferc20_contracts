@@ -75,4 +75,11 @@ interface INonfungiblePositionManager {
         uint128 tokensOwed0, 
         uint128 tokensOwed1
     );
+
+    function createAndInitializePoolIfNecessary(
+        address token0,
+        address token1,
+        uint24 fee,
+        uint160 sqrtPriceX96
+    ) external returns (address pool);
 }

@@ -275,11 +275,11 @@ contract InscriptionFactory is Ownable{
             "QmQUw15DiQKSfqKKUWDgTdeBHc19K1ByqLkx3SZWkduHUK",
             100000 ether,   // 100,000
             _limitPerMint,     // 1000 * 10^18
-            10,      // Mint size
+            11,      // Mint size
             _freezeTime,    // freezeTime
             address(0x0),   // onlyContractAddress
             0,  // onlyMinQuantity
-            _isIFOMode ? 1 ether : 0,  // crowdFundintRate
+            _isIFOMode ? 10**9 : 0,  // crowdFundintRate
             false, // isWhitelist
             _isIFOMode, // isIFOMode
             _isIFOMode ? _liquidityTokenPercent : 0, // liquidityTokenPercent
@@ -287,10 +287,3 @@ contract InscriptionFactory is Ownable{
         );
     }
 }
-// 10000000000000000000  ifo费用
-// 100000000000000000 ETH,打到factory的佣金
-//  9900000000000000000  打到ifo合约的weth，数据正确，扣除了1%手续费
-// 5539_565217391304347820 打到ifo合约的test2
-// 12330_000000000000000000 打给用户
-
-// 8258_372093023255813950

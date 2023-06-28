@@ -8,6 +8,8 @@ import "./interfaces/IERC721Receiver.sol";
 import "./interfaces/IWETH.sol";
 import "./libs/TransferHelper.sol";
 import "./libs/BytesLib.sol";
+import "@uniswap/v3-core/contracts/interfaces/IUniswapV3Factory.sol";
+import "@uniswap/v3-core/contracts/interfaces/IUniswapV3Pool.sol";
 
 // This contract will be created while deploying
 // The liquidity can not be removed
@@ -15,9 +17,13 @@ contract InitialFairOffering {
     int24 private constant MIN_TICK = -887272;      // add liquidity with full range 
     int24 private constant MAX_TICK = -MIN_TICK;    // add liquidity with full range
     int24 private constant TICK_SPACING = 60;       // Tick space is 60
+    uint24 public constant UNISWAP_FEE = 3000;
 
     INonfungiblePositionManager public constant nonfungiblePositionManager 
         = INonfungiblePositionManager(0xC36442b4a4522E871399CD717aBDD847Ab11FE88);
+
+    IUniswapV3Factory public uniswapV3Factory 
+        = IUniswapV3Factory(0x1F98431c8aD98523631AE4a59f267346ea31F984);
 
     IWETH public weth;
 
@@ -65,6 +71,29 @@ contract InitialFairOffering {
         require(address(inscriptionFactory)== msg.sender, "Only inscription factory allowed");
         require(_token.inscriptionId > 0, "token data wrong");
         token = _token;
+        // _initializePool(address(weth), _token.addr, );
+    }
+
+    function _initializePool(
+        address _weth,
+        address _token,
+        uint160 _rate // eth quantity per token
+    ) private {
+        address _token0 = _weth;
+        address _token1 = _token;
+        // TODO: 
+        uint160 sqrtPriceX96 = 11111; // token quantity per weth
+        if(_token0 > _token1) {
+            _token0 = _token;
+            _token1 = _weth;
+            sqrtPriceX96 = 22222; // weth quantity per token
+        }
+        nonfungiblePositionManager.createAndInitializePoolIfNecessary(
+            _token0,
+            _token1,
+            UNISWAP_FEE,
+            sqrtPriceX96
+        );
     }
 
     // Add liquidity
@@ -90,10 +119,19 @@ contract InitialFairOffering {
         // TransferHelper.safeTransfer(address(weth), BURN_ADDRESS, totalEthLiquidity * ratio / 10000);
         // TransferHelper.safeTransfer(token.addr, BURN_ADDRESS, totalTokenLiquidity * ratio / 10000);
 
+        address pool = uniswapV3Factory.getPool(address(weth), token.addr, UNISWAP_FEE);
+        require(pool != address(0x0), "Pool not exist, create pool in uniswapV3 manually");
+
         _mintNewPosition(
             totalEthLiquidity * ratio / 10000, // weth amount
-            totalTokenLiquidity * ratio / 10000 // ferc20 token amount
+            totalTokenLiquidity * ratio / 10000  // ferc20 token amount
         );
+    }
+
+    function decreaseLiquidity(
+        uint16 ratio
+    ) public {
+        // TODO
     }
 
     function collectFee(
@@ -184,26 +222,37 @@ contract InitialFairOffering {
     }
 
     function _mintNewPosition(
-        uint amount0ToAdd,
-        uint amount1ToAdd
+        uint amount0ToAdd,  // for weth
+        uint amount1ToAdd   // for ferc20
+        // TODO: set tickLower and tickUpper
     ) private returns (uint tokenId, uint128 liquidity, uint amount0, uint amount1) {
-        TransferHelper.safeTransferFrom(address(weth), msg.sender, address(this), amount0ToAdd);
-        TransferHelper.safeTransferFrom(token.addr, msg.sender, address(this), amount1ToAdd);
+        // If weth < ferc20, set token0/amount0 is weth and token1/amount1 is ferc20
+        // Otherwise, set token0/amount0 is ferc20, and token1/amount1 is weth
+        address _token0 = address(weth);
+        address _token1 = token.addr;
+        uint _amount0 = amount0ToAdd;
+        uint _amount1 = amount1ToAdd;
+        if(address(weth) > token.addr) {
+            _token0 = token.addr;
+            _token1 = address(weth);
+            _amount0 = amount1ToAdd;
+            _amount1 = amount0ToAdd;
+        }
 
         // Approve the position manager
-        TransferHelper.safeApprove(address(weth), address(nonfungiblePositionManager), amount0ToAdd);
-        TransferHelper.safeApprove(token.addr, address(nonfungiblePositionManager), amount1ToAdd);
+        TransferHelper.safeApprove(_token0, address(nonfungiblePositionManager), _amount0);
+        TransferHelper.safeApprove(_token1, address(nonfungiblePositionManager), _amount1);
 
         INonfungiblePositionManager.MintParams
             memory params = INonfungiblePositionManager.MintParams({
-                token0: address(weth),
-                token1: token.addr,
-                fee: 3000,
+                token0: _token0,
+                token1: _token1,
+                fee: UNISWAP_FEE,
                 tickLower: (MIN_TICK / TICK_SPACING) * TICK_SPACING, // full range
                 tickUpper: (MAX_TICK / TICK_SPACING) * TICK_SPACING,
-                amount0Desired: amount0ToAdd,
-                amount1Desired: amount1ToAdd,
-                amount0Min: 0, // ###### slipage处理
+                amount0Desired: _amount0,
+                amount1Desired: _amount1,
+                amount0Min: 0, // TODO slipage处理
                 amount1Min: 0,
                 recipient: address(this),
                 deadline: block.timestamp
@@ -213,16 +262,12 @@ contract InitialFairOffering {
 
         _createDeposit(msg.sender, tokenId);
 
-        if (amount0 < amount0ToAdd) {
-            TransferHelper.safeApprove(address(weth), address(nonfungiblePositionManager), 0);
-            uint256 refund0 = amount0ToAdd - amount0;
-            TransferHelper.safeTransfer(address(weth), msg.sender, refund0);
+        if (amount0 < _amount0) {
+            TransferHelper.safeApprove(_token0, address(nonfungiblePositionManager), 0);
         }
 
-        if (amount1 < amount1ToAdd) {
-            TransferHelper.safeApprove(token.addr, address(nonfungiblePositionManager), 0);
-            uint256 refund1 = amount1ToAdd - amount1;
-            TransferHelper.safeTransfer(token.addr, msg.sender, refund1);
+        if (amount1 < _amount1) {
+            TransferHelper.safeApprove(_token1, address(nonfungiblePositionManager), 0);
         }
     }
 
